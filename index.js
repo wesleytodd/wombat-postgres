@@ -17,6 +17,9 @@ module.exports = function(wombat) {
 			}
 		});
 
+		// Keep connected state
+		this.connected = false;
+
 		// Create client
 		this.client = new pg.Client({
 			user: this.options.defaultUser,
@@ -30,18 +33,6 @@ module.exports = function(wombat) {
 			wombat.logger.log('error', err);
 		}.bind(this));
 
-		// Close on drain
-		//this.client.on('drain', function() {
-		//	wombat.logger.log('verbose', 'Disconnecting from database');
-		//	this.client.end();
-		//}.bind(this));
-
-		// Connection
-		this.client.connect(function(err) {
-			if (err) {
-				wombat.logger.log('error', err);
-			}
-		});
 	};
 	util.inherits(PostgreSQL, wombat.Service);
 	util.inherits(PostgreSQL, wombat.Package);
@@ -53,6 +44,29 @@ module.exports = function(wombat) {
 		defaultPassword: 'postgres',
 		defaultDatabase: 'postgres',
 		port: 5432
+	};
+
+	// Connect to the postgres client
+	PostgreSQL.prototype.openConnection = function(done) {
+		if (!this.connected) {
+			// Connection
+			this.client.connect(function(err) {
+				if (err) {
+					wombat.logger.log('error', err);
+				}
+				this.connected = true;
+				if (typeof done === 'function') {
+					done(err);
+				}
+			}.bind(this));
+		}
+	};
+
+	PostgreSQL.prototype.closeConnection = function() {
+		if (this.connected) {
+			this.connected = false;
+			this.client.end();
+		}
 	};
 
 	// Install the package
@@ -84,21 +98,42 @@ module.exports = function(wombat) {
 	// Create a user
 	PostgreSQL.prototype.user = function(name, pass, done) {
 
-		// Create query
-		var q = util.format('CREATE USER %s WITH PASSWORD \'%s\';', name, pass);
-		wombat.logger.log('verbose', 'running query: ', q);
+		// Make sure we are connected
+		this.openConnection();
 
-		// Run query
-		this.client.query(q, function(err) {
-			// Log error
+		// check if user exists
+		this.client.query(util.format('SELECT 1 FROM pg_roles WHERE rolname=\'%s\'', name), function(err, res) {
+			// warn on error, but dont quit
 			if (err) {
-				wombat.logger.log('error', err);
-				return done(err);
+				wombat.logger.log('warn', err);
 			}
 
-			// Log success
-			wombat.logger.log('info', 'PostgreSQL user "%s" created with password "%s".', name, pass);
-			done();
+			// Create if not exists
+			if (res.rowCount != 1) {
+
+				// Create query
+				var q = util.format('CREATE USER %s WITH PASSWORD \'%s\';', name, pass);
+				wombat.logger.log('verbose', 'running query: ', q);
+
+				// Run query
+				this.client.query(q, function(err) {
+					// Log error
+					if (err) {
+						wombat.logger.log('error', err);
+						return done(err);
+					}
+
+					// Log success
+					wombat.logger.log('info', 'PostgreSQL user "%s" created with password "%s".', name, pass);
+					done();
+				}.bind(this));
+
+			} else {
+				// Already exists
+				wombat.logger.log('info', util.format('Postgres user %s already exists', name));
+				done();
+			}
+			
 		}.bind(this));
 
 	};
@@ -112,26 +147,45 @@ module.exports = function(wombat) {
 			options = {};
 		}
 
-		// Build query
-		var q = 'CREATE DATABASE ' + name;
-		_.each(options, function(v, k) {
-			q += ' ' + k + ' ' + v;
-		});
-		q += ';';
-		wombat.logger.log('verbose', 'running query: ', q);
-
-		// Create the user
-		this.client.query(q, function(err) {
-			// Log error
+		// Check if database exists
+		wombat.exec(util.format('sudo -u postgres psql -l | grep %s | wc -l', name), function(err, out) {
+			// Log error, but continute
 			if (err) {
-				console.log(arguments);
-				wombat.logger.error(err);
-				return done(err);
+				wombat.logger('Error checking if database exists.');
 			}
 
-			// Log success
-			wombat.logger.log('verbose', 'Database %s created.', name);
-			done();
+			// Create if it doesnt already exist
+			if (out.trim() != '1') {
+
+				// Make sure we are connected
+				this.openConnection();
+
+				// Build query
+				var q = 'CREATE DATABASE ' + name;
+				_.each(options, function(v, k) {
+					q += ' ' + k + ' ' + v;
+				});
+				q += ';';
+				wombat.logger.log('verbose', 'running query: ', q);
+
+				// Create the user
+				this.client.query(q, function(err) {
+					// Log error
+					if (err) {
+						wombat.logger.error(err);
+						return done(err);
+					}
+
+					// Log success
+					wombat.logger.log('verbose', 'Database %s created.', name);
+					done();
+				}.bind(this));
+			} else {
+				// Already exists
+				wombat.logger.log('info', util.format('Postgres datatabase %s already exists.', name));
+				done();
+			}
+
 		}.bind(this));
 	
 	};
