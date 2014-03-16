@@ -1,6 +1,6 @@
 {
   "name": "wombat-postgres",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "A Wombat plugin to install and configure PostgreSQL",
   "main": "index.js",
   "scripts": {
