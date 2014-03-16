@@ -1,17 +1,20 @@
 // Requirements
 var util = require('util'),
+	async = require('async'),
 	pg = require('pg'),
 	_ = require('lodash');
 
 module.exports = function(wombat) {
 
-	var PostgreSQL = function(conf) {
+	var PostgreSQL = function(options) {
 		// Merge options
-		this.options = _.extend(this.options || {}, PostgreSQL.defaultOptions, conf);
+		this.options = _.extend({}, PostgreSQL.defaultOptions, this.options || {}, options);
 
-		// Extends service and package
-		wombat.Service.call(this, 'postgresql');
-		wombat.Package.call(this, 'postgresql', {
+		// Create service
+		this.service = new wombat.Service('postgresql');
+
+		// Create package
+		this.package = new wombat.Package(util.format('postgresql-%s', this.options.version), {
 			otherPackages: {
 				'postgresql-contrib': !!this.options.installContrib
 			}
@@ -31,10 +34,9 @@ module.exports = function(wombat) {
 		// Close on error
 		this.client.on('error', function(err) {
 			wombat.logger.log('error', err);
-		}.bind(this));
+		});
 
 	};
-	util.inherits(PostgreSQL, wombat.Service);
 	util.inherits(PostgreSQL, wombat.Package);
 
 	// Defaults
@@ -43,7 +45,19 @@ module.exports = function(wombat) {
 		defaultUser: 'postgres',
 		defaultPassword: 'postgres',
 		defaultDatabase: 'postgres',
-		port: 5432
+		version: '9.1',
+		port: 5432,
+		listenAddresses: 'localhost',
+		maxConnections: 100,
+		socket: '/var/run/postgresql',
+		logPrefix: '%t ',
+		users: [{
+			type: 'host',
+			database: 'all',
+			name: 'all',
+			address: '10.0.2.2/24',
+			method: 'trust'
+		}]
 	};
 
 	// Connect to the postgres client
@@ -69,9 +83,22 @@ module.exports = function(wombat) {
 		}
 	};
 
+	// Copy configs
+	PostgreSQL.prototype.copyConfigs = function(done) {
+		async.parallel([function(done) {
+			// Main conf
+			var p = path.resolve(path.sep + path.join('etc', 'postgresql', this.options.version, 'main', 'postgresql.conf'));
+			wombat.template(path.join(__dirname, 'templates', 'postgresql.conf.tmpl'), p, this.options, done);
+		}.bind(this), function(done) {
+			// Users conf
+			var p = path.resolve(path.sep + path.join('etc', 'postgresql', this.options.version, 'main', 'pg_hba.conf'));
+			wombat.template(path.join(__dirname, 'templates', 'pg_hba.conf.tmpl'), p, this.options, done);
+		}.bind(this)], done);
+	};
+
 	// Install the package
 	PostgreSQL.prototype.install = function(done) {
-		wombat.Package.prototype.install.call(this, function(err) {
+		this.package.install(function(err) {
 			// Fail on error
 			if (err) {
 				wombat.logger.log('error', 'Failed to install PostgreSQL');
